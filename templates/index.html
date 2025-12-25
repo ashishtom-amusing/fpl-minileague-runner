@@ -200,6 +200,39 @@
             display: block;
         }
 
+        .progress-container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-pink));
+            width: 0%;
+            transition: width 0.3s ease;
+            box-shadow: 0 0 20px rgba(0, 255, 245, 0.5);
+        }
+
+        .progress-text {
+            font-size: 1.2rem;
+            color: var(--neon-cyan);
+            margin-bottom: 10px;
+        }
+
+        .progress-details {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
         .spinner {
             width: 60px;
             height: 60px;
@@ -251,6 +284,37 @@
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 12px;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+
+        .sort-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .sort-btn {
+            padding: 8px 16px;
+            background: var(--dark-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-light);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .sort-btn:hover {
+            border-color: var(--neon-cyan);
+            color: var(--neon-cyan);
+        }
+
+        .sort-btn.active {
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+            color: var(--dark-bg);
+            border-color: transparent;
         }
 
         .leaderboard-title {
@@ -446,8 +510,13 @@
         </div>
 
         <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p>Fetching leaderboard data...</p>
+            <div class="progress-container">
+                <div class="progress-text" id="progressText">Fetching leaderboard data...</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-details" id="progressDetails">Starting...</div>
+            </div>
         </div>
 
         <div class="error" id="error"></div>
@@ -456,6 +525,11 @@
             <div class="leaderboard-header">
                 <div class="leaderboard-title">
                     <span id="gwTitle"></span>
+                </div>
+                <div class="sort-controls">
+                    <button class="sort-btn active" data-sort="gw_points">Sort by GW Points</button>
+                    <button class="sort-btn" data-sort="total_points">Sort by Total</button>
+                    <button class="sort-btn" data-sort="net_points">Sort by Net</button>
                 </div>
                 <div class="stats">
                     <div class="stat-item">
@@ -494,6 +568,13 @@
         const error = document.getElementById('error');
         const leaderboardSection = document.getElementById('leaderboardSection');
         const fetchBtn = document.getElementById('fetchBtn');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const progressDetails = document.getElementById('progressDetails');
+
+        let currentData = null;
+        let currentGameweek = null;
+        let currentLeagueId = null;
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -501,11 +582,18 @@
             const gameweek = document.getElementById('gameweek').value;
             const leagueId = document.getElementById('league_id').value;
             
+            currentGameweek = gameweek;
+            currentLeagueId = leagueId;
+            
             // Show loading
             loading.classList.add('active');
             error.classList.remove('active');
             leaderboardSection.classList.remove('active');
             fetchBtn.disabled = true;
+            
+            progressFill.style.width = '0%';
+            progressText.textContent = 'Starting...';
+            progressDetails.textContent = '';
             
             try {
                 const formData = new FormData();
@@ -523,26 +611,60 @@
                     throw new Error(data.error || 'Failed to fetch data');
                 }
                 
-                displayLeaderboard(data);
+                // Start polling for progress
+                pollProgress(data.request_id);
                 
             } catch (err) {
                 error.textContent = err.message;
                 error.classList.add('active');
-            } finally {
                 loading.classList.remove('active');
                 fetchBtn.disabled = false;
             }
         });
 
-        function displayLeaderboard(data) {
+        async function pollProgress(requestId) {
+            try {
+                const response = await fetch(`/progress/${requestId}?gameweek=${currentGameweek}&league_id=${currentLeagueId}`);
+                const data = await response.json();
+                
+                if (data.status === 'processing') {
+                    // Update progress bar
+                    progressFill.style.width = data.percentage + '%';
+                    progressText.textContent = `Loading managers... ${data.percentage}%`;
+                    progressDetails.textContent = `${data.processed} / ${data.total} managers processed`;
+                    
+                    // Continue polling
+                    setTimeout(() => pollProgress(requestId), 500);
+                } else if (data.status === 'completed') {
+                    // Data is ready
+                    progressFill.style.width = '100%';
+                    currentData = data;
+                    displayLeaderboard(data);
+                    loading.classList.remove('active');
+                    fetchBtn.disabled = false;
+                }
+            } catch (err) {
+                error.textContent = 'Error fetching progress: ' + err.message;
+                error.classList.add('active');
+                loading.classList.remove('active');
+                fetchBtn.disabled = false;
+            }
+        }
+
+        function displayLeaderboard(data, sortBy = 'gw_points') {
             document.getElementById('gwTitle').textContent = `Gameweek ${data.gameweek}`;
             document.getElementById('totalManagers').textContent = data.total_managers;
             document.getElementById('leagueIdDisplay').textContent = data.league_id;
             
+            // Sort data
+            const sortedData = [...data.leaderboard].sort((a, b) => {
+                return b[sortBy] - a[sortBy];
+            });
+            
             const tbody = document.getElementById('leaderboardBody');
             tbody.innerHTML = '';
             
-            data.leaderboard.forEach((manager, index) => {
+            sortedData.forEach((manager, index) => {
                 const rank = index + 1;
                 const tr = document.createElement('tr');
                 
@@ -576,6 +698,25 @@
             
             leaderboardSection.classList.add('active');
         }
+
+        // Sort button handlers
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('sort-btn')) {
+                // Remove active from all buttons
+                document.querySelectorAll('.sort-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                
+                // Add active to clicked button
+                e.target.classList.add('active');
+                
+                // Sort and redisplay
+                const sortBy = e.target.getAttribute('data-sort');
+                if (currentData) {
+                    displayLeaderboard(currentData, sortBy);
+                }
+            }
+        });
     </script>
 </body>
 </html>
