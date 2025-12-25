@@ -140,36 +140,28 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/leaderboard', methods=['GET'])
+@app.route('/leaderboard', methods=['POST'])
 def leaderboard():
     try:
-        gameweek = int(request.args.get('gameweek'))
-        league_id = int(request.args.get('league_id'))
+        gameweek = int(request.form.get('gameweek'))
+        league_id = int(request.form.get('league_id'))
         
-        def generate():
-            for progress in get_gw_leaderboard_with_progress(league_id, gameweek):
-                if 'error' in progress:
-                    yield f"data: {json.dumps({'error': progress['error']})}\n\n"
-                    return
-                elif progress['status'] == 'completed':
-                    yield f"data: {json.dumps({
-                        'status': 'completed',
-                        'gameweek': gameweek,
-                        'league_id': league_id,
-                        'leaderboard': progress['data'],
-                        'total_managers': len(progress['data'])
-                    })}\n\n"
-                else:
-                    yield f"data: {json.dumps(progress)}\n\n"
+        # Process synchronously and return result
+        result = None
+        for progress in get_gw_leaderboard_with_progress(league_id, gameweek):
+            if progress['status'] == 'completed':
+                result = {
+                    'status': 'completed',
+                    'gameweek': gameweek,
+                    'league_id': league_id,
+                    'leaderboard': progress['data'],
+                    'total_managers': len(progress['data'])
+                }
         
-        return app.response_class(
-            generate(),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no'
-            }
-        )
+        if result:
+            return jsonify(result)
+        else:
+            return jsonify({'error': 'Failed to fetch data'}), 400
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
