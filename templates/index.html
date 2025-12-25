@@ -575,6 +575,7 @@
         let currentData = null;
         let currentGameweek = null;
         let currentLeagueId = null;
+        let eventSource = null;
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -595,24 +596,51 @@
             progressText.textContent = 'Starting...';
             progressDetails.textContent = '';
             
+            // Close any existing connection
+            if (eventSource) {
+                eventSource.close();
+            }
+            
             try {
-                const formData = new FormData();
-                formData.append('gameweek', gameweek);
-                formData.append('league_id', leagueId);
+                // Create EventSource for SSE with GET params
+                const url = `/leaderboard?gameweek=${gameweek}&league_id=${leagueId}`;
+                eventSource = new EventSource(url);
                 
-                const response = await fetch('/leaderboard', {
-                    method: 'POST',
-                    body: formData
-                });
+                eventSource.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.error) {
+                        error.textContent = data.error;
+                        error.classList.add('active');
+                        loading.classList.remove('active');
+                        fetchBtn.disabled = false;
+                        eventSource.close();
+                        return;
+                    }
+                    
+                    if (data.status === 'processing' || data.status === 'started') {
+                        // Update progress bar
+                        progressFill.style.width = data.percentage + '%';
+                        progressText.textContent = `Loading managers... ${data.percentage}%`;
+                        progressDetails.textContent = `${data.processed} / ${data.total} managers processed`;
+                    } else if (data.status === 'completed') {
+                        // Data is ready
+                        progressFill.style.width = '100%';
+                        currentData = data;
+                        displayLeaderboard(data);
+                        loading.classList.remove('active');
+                        fetchBtn.disabled = false;
+                        eventSource.close();
+                    }
+                };
                 
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to fetch data');
-                }
-                
-                // Start polling for progress
-                pollProgress(data.request_id);
+                eventSource.onerror = function(err) {
+                    error.textContent = 'Connection error. Please try again.';
+                    error.classList.add('active');
+                    loading.classList.remove('active');
+                    fetchBtn.disabled = false;
+                    eventSource.close();
+                };
                 
             } catch (err) {
                 error.textContent = err.message;
@@ -621,35 +649,6 @@
                 fetchBtn.disabled = false;
             }
         });
-
-        async function pollProgress(requestId) {
-            try {
-                const response = await fetch(`/progress/${requestId}?gameweek=${currentGameweek}&league_id=${currentLeagueId}`);
-                const data = await response.json();
-                
-                if (data.status === 'processing') {
-                    // Update progress bar
-                    progressFill.style.width = data.percentage + '%';
-                    progressText.textContent = `Loading managers... ${data.percentage}%`;
-                    progressDetails.textContent = `${data.processed} / ${data.total} managers processed`;
-                    
-                    // Continue polling
-                    setTimeout(() => pollProgress(requestId), 500);
-                } else if (data.status === 'completed') {
-                    // Data is ready
-                    progressFill.style.width = '100%';
-                    currentData = data;
-                    displayLeaderboard(data);
-                    loading.classList.remove('active');
-                    fetchBtn.disabled = false;
-                }
-            } catch (err) {
-                error.textContent = 'Error fetching progress: ' + err.message;
-                error.classList.add('active');
-                loading.classList.remove('active');
-                fetchBtn.disabled = false;
-            }
-        }
 
         function displayLeaderboard(data, sortBy = 'gw_points') {
             document.getElementById('gwTitle').textContent = `Gameweek ${data.gameweek}`;
