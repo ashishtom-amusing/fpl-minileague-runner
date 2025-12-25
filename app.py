@@ -2,17 +2,24 @@ import json
 import requests
 from flask import Flask, render_template, request, jsonify
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 app = Flask(__name__)
 
 BASE_URL = "https://fantasy.premierleague.com/api/"
+MAX_WORKERS = 10  # Concurrent API requests
 
 
-def fetch_data(url):
-    response = requests.get(url)
-    if response.status_code != 200:
+def fetch_data(url, timeout=10):
+    try:
+        response = requests.get(url, timeout=timeout)
+        if response.status_code != 200:
+            return None
+        return response.json()
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
         return None
-    return response.json()
 
 
 def fetch_league_data(league_id):
@@ -50,15 +57,17 @@ def fetch_manager_history(team_id):
 
 
 def get_gw_leaderboard(league_id, gameweek):
-    """Fetch league data and create leaderboard"""
+    """Fetch league data and create leaderboard with parallel processing"""
     league_data = fetch_league_data(league_id)
     
     if not league_data:
         return None, "Failed to fetch league data"
     
+    managers = league_data['standings']['results']
     leaderboard = []
     
-    for manager in league_data['standings']['results']:
+    # Fetch history for all managers in parallel
+    def fetch_manager_gw_data(manager):
         team_id = manager['entry']
         history = fetch_manager_history(team_id)
         
@@ -67,7 +76,7 @@ def get_gw_leaderboard(league_id, gameweek):
             transfer_cost = history['current'][gameweek - 1]['event_transfers_cost']
             net_points = gw_points - transfer_cost
             
-            leaderboard.append({
+            return {
                 'manager_name': manager['entry_name'],
                 'player_name': manager['player_name'],
                 'team_id': manager['entry'],
@@ -76,7 +85,17 @@ def get_gw_leaderboard(league_id, gameweek):
                 'net_points': net_points,
                 'total_points': manager['total'],
                 'overall_rank': manager['rank']
-            })
+            }
+        return None
+    
+    # Use ThreadPoolExecutor for parallel requests
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(fetch_manager_gw_data, mgr) for mgr in managers]
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                leaderboard.append(result)
     
     leaderboard.sort(key=lambda x: x['gw_points'], reverse=True)
     
