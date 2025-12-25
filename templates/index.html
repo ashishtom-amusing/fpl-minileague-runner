@@ -573,9 +573,6 @@
         const progressDetails = document.getElementById('progressDetails');
 
         let currentData = null;
-        let currentGameweek = null;
-        let currentLeagueId = null;
-        let eventSource = null;
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -583,69 +580,42 @@
             const gameweek = document.getElementById('gameweek').value;
             const leagueId = document.getElementById('league_id').value;
             
-            currentGameweek = gameweek;
-            currentLeagueId = leagueId;
-            
             // Show loading
             loading.classList.add('active');
             error.classList.remove('active');
             leaderboardSection.classList.remove('active');
             fetchBtn.disabled = true;
             
-            progressFill.style.width = '0%';
-            progressText.textContent = 'Starting...';
-            progressDetails.textContent = '';
-            
-            // Close any existing connection
-            if (eventSource) {
-                eventSource.close();
-            }
+            progressFill.style.width = '50%';
+            progressText.textContent = 'Fetching data...';
+            progressDetails.textContent = 'This may take 1-3 minutes for large leagues';
             
             try {
-                // Create EventSource for SSE with GET params
-                const url = `/leaderboard?gameweek=${gameweek}&league_id=${leagueId}`;
-                eventSource = new EventSource(url);
+                const formData = new FormData();
+                formData.append('gameweek', gameweek);
+                formData.append('league_id', leagueId);
                 
-                eventSource.onmessage = function(event) {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.error) {
-                        error.textContent = data.error;
-                        error.classList.add('active');
-                        loading.classList.remove('active');
-                        fetchBtn.disabled = false;
-                        eventSource.close();
-                        return;
-                    }
-                    
-                    if (data.status === 'processing' || data.status === 'started') {
-                        // Update progress bar
-                        progressFill.style.width = data.percentage + '%';
-                        progressText.textContent = `Loading managers... ${data.percentage}%`;
-                        progressDetails.textContent = `${data.processed} / ${data.total} managers processed`;
-                    } else if (data.status === 'completed') {
-                        // Data is ready
-                        progressFill.style.width = '100%';
-                        currentData = data;
-                        displayLeaderboard(data);
-                        loading.classList.remove('active');
-                        fetchBtn.disabled = false;
-                        eventSource.close();
-                    }
-                };
+                const response = await fetch('/leaderboard', {
+                    method: 'POST',
+                    body: formData
+                });
                 
-                eventSource.onerror = function(err) {
-                    error.textContent = 'Connection error. Please try again.';
-                    error.classList.add('active');
-                    loading.classList.remove('active');
-                    fetchBtn.disabled = false;
-                    eventSource.close();
-                };
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch data');
+                }
+                
+                progressFill.style.width = '100%';
+                currentData = data;
+                displayLeaderboard(data);
+                loading.classList.remove('active');
                 
             } catch (err) {
                 error.textContent = err.message;
                 error.classList.add('active');
                 loading.classList.remove('active');
+            } finally {
                 fetchBtn.disabled = false;
             }
         });
