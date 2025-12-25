@@ -1,17 +1,16 @@
 import json
 import requests
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import secrets
 
 app = Flask(__name__)
+app.secret_key = secrets.token_hex(16)
 
 BASE_URL = "https://fantasy.premierleague.com/api/"
 MAX_WORKERS = 5  # Reduced for memory constraints on free tier
-
-# Store progress data in memory (simple approach)
-progress_data = {}
 
 
 def fetch_data(url, timeout=10):
@@ -59,20 +58,22 @@ def fetch_manager_history(team_id):
     return fetch_data(url)
 
 
-def get_gw_leaderboard(league_id, gameweek, request_id):
-    """Fetch league data and create leaderboard with progress tracking"""
+def get_gw_leaderboard_with_progress(league_id, gameweek):
+    """Fetch league data and create leaderboard - returns generator for progress"""
     league_data = fetch_league_data(league_id)
     
     if not league_data:
-        return None, "Failed to fetch league data"
+        yield {'error': 'Failed to fetch league data'}
+        return
     
     managers = league_data['standings']['results']
     total_managers = len(managers)
     
-    progress_data[request_id] = {
+    yield {
+        'status': 'started',
         'total': total_managers,
         'processed': 0,
-        'status': 'processing'
+        'percentage': 0
     }
     
     leaderboard = []
@@ -80,7 +81,6 @@ def get_gw_leaderboard(league_id, gameweek, request_id):
     
     # Fetch history for all managers in parallel
     def fetch_manager_gw_data(manager):
-        nonlocal processed_count
         try:
             team_id = manager['entry']
             history = fetch_manager_history(team_id)
@@ -102,9 +102,6 @@ def get_gw_leaderboard(league_id, gameweek, request_id):
                 }
         except Exception as e:
             print(f"Error processing manager {manager.get('entry')}: {e}")
-        finally:
-            processed_count += 1
-            progress_data[request_id]['processed'] = processed_count
         return None
     
     # Process in smaller batches to reduce memory
@@ -119,11 +116,23 @@ def get_gw_leaderboard(league_id, gameweek, request_id):
                 result = future.result()
                 if result:
                     leaderboard.append(result)
+                processed_count += 1
+                
+                # Yield progress every 10 managers
+                if processed_count % 10 == 0 or processed_count == total_managers:
+                    yield {
+                        'status': 'processing',
+                        'total': total_managers,
+                        'processed': processed_count,
+                        'percentage': int((processed_count / total_managers) * 100)
+                    }
     
     leaderboard.sort(key=lambda x: x['gw_points'], reverse=True)
-    progress_data[request_id]['status'] = 'completed'
     
-    return leaderboard, None
+    yield {
+        'status': 'completed',
+        'data': leaderboard
+    }
 
 
 @app.route('/')
@@ -131,61 +140,39 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/leaderboard', methods=['POST'])
+@app.route('/leaderboard', methods=['GET'])
 def leaderboard():
     try:
-        import uuid
-        import threading
+        gameweek = int(request.args.get('gameweek'))
+        league_id = int(request.args.get('league_id'))
         
-        gameweek = int(request.form.get('gameweek'))
-        league_id = int(request.form.get('league_id'))
-        request_id = str(uuid.uuid4())
+        def generate():
+            for progress in get_gw_leaderboard_with_progress(league_id, gameweek):
+                if 'error' in progress:
+                    yield f"data: {json.dumps({'error': progress['error']})}\n\n"
+                    return
+                elif progress['status'] == 'completed':
+                    yield f"data: {json.dumps({
+                        'status': 'completed',
+                        'gameweek': gameweek,
+                        'league_id': league_id,
+                        'leaderboard': progress['data'],
+                        'total_managers': len(progress['data'])
+                    })}\n\n"
+                else:
+                    yield f"data: {json.dumps(progress)}\n\n"
         
-        # Start processing in background thread
-        def process_data():
-            leaderboard_data, error = get_gw_leaderboard(league_id, gameweek, request_id)
-            if not error:
-                progress_data[request_id]['data'] = leaderboard_data
-        
-        thread = threading.Thread(target=process_data)
-        thread.start()
-        
-        # Return request ID for progress tracking
-        return jsonify({'request_id': request_id})
+        return app.response_class(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no'
+            }
+        )
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
-@app.route('/progress/<request_id>', methods=['GET'])
-def get_progress(request_id):
-    """Get progress of data fetching"""
-    if request_id not in progress_data:
-        return jsonify({'error': 'Invalid request ID'}), 404
-    
-    data = progress_data[request_id]
-    
-    if data['status'] == 'completed' and 'data' in data:
-        # Return final data
-        leaderboard_data = data['data']
-        gameweek = request.args.get('gameweek', '')
-        league_id = request.args.get('league_id', '')
-        
-        return jsonify({
-            'status': 'completed',
-            'gameweek': gameweek,
-            'league_id': league_id,
-            'leaderboard': leaderboard_data,
-            'total_managers': len(leaderboard_data)
-        })
-    else:
-        # Return progress
-        return jsonify({
-            'status': 'processing',
-            'total': data['total'],
-            'processed': data['processed'],
-            'percentage': int((data['processed'] / data['total']) * 100) if data['total'] > 0 else 0
-        })
 
 
 if __name__ == '__main__':
